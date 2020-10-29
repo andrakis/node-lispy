@@ -25,6 +25,7 @@ var fs = require('fs');
 var debugMode = false;
 var testMode  = false;
 var helpMode  = false;
+var timeMode  = false;
 var programFile      = undefined;
 var programArguments = [];
 (function() {
@@ -40,6 +41,8 @@ var programArguments = [];
 				debugMode = true;
 			else if(args && v === "-T")
 				testMode = true;
+			else if(args && v === "-t")
+				timeMode = true;
 			else if(args && v.match(/^--?h(elp)?$/))
 				helpMode = true;
 			else if(programFile === undefined)
@@ -388,58 +391,6 @@ var Lispy = (function() {
 	function Test () {
 		var e = new Environment();
 		AddStdLib(e);
-		var code = ['begin',
-			[new Symbol('print'), "Hello, world!"],
-			[new Symbol('define'), 'add', ['lambda', ['X', 'Y'],
-				[new Symbol('+'), new Symbol('X'), new Symbol('Y')]
-			]],
-			[new Symbol('define'), 'A', 5],
-			[new Symbol('define'), 'B', 10],
-			[new Symbol('print'), new Symbol('A'), "+", new Symbol('B'), "=",
-				[new Symbol('add'), new Symbol('A'), new Symbol('B')]
-			],
-			['define', new Symbol('fac1'), ['lambda', ['N'],
-				['if', [new Symbol('<='), new Symbol('N'), 1],
-					1,
-					/* else */
-					// (* N (fac1 (- N 1)))
-					[new Symbol('*'), new Symbol('N'),
-						[new Symbol('fac1'), [new Symbol('-'), new Symbol('N'), 1]]
-					]
-				]
-			]],
-			['define', new Symbol('fac2'), ['lambda', ['N'],
-				// (fac2a N 1)
-				[new Symbol('fac2a'), new Symbol('N'), 1]
-			]],
-			['define', new Symbol('fac2a'), ['lambda', ['N', 'A'],
-				// (if(<= N 1)
-				//     A
-				//     (fac2a (- N 1) (* N A)))
-				['if', [new Symbol('<='), new Symbol('N'), 1],
-					new Symbol('A'),
-					[new Symbol('fac2a'),
-						[new Symbol('-'), new Symbol('N'), 1],
-						[new Symbol('*'), new Symbol('N'), new Symbol('A')]
-					]
-				]
-			]],
-			[new Symbol('print'), "Fac1", new Symbol('B'), "=", [new Symbol('fac1'), new Symbol('B')]],
-			[new Symbol('print'), "Fac2", new Symbol('B'), "=", [new Symbol('fac2'), new Symbol('B')]],
-			// Open and print a file
-			['define', new Symbol('FS'), [new Symbol('require'), "fs"]],
-			// (print "Size of lispy.js:"
-			//      (length (to_s (js:call FS (dict:get FS 'readFileSync) 'lispy.js'))))
-			[new Symbol('print'), "Size of lispy.js:",
-				[new Symbol('length'),
-					[new Symbol('to_s'), [new Symbol('js:call'),
-						new Symbol('FS'),
-						[new Symbol('dict:get'), new Symbol('FS'), 'readFileSync'],
-						'lispy.js'
-					]]
-				]
-			],
-		];
 		var start = new Date();
 		var codeStr = "(begin\r" +
 			"(print \"Hello, world!\")\r" +
@@ -448,6 +399,9 @@ var Lispy = (function() {
 			"(define B 10)\r" +
 			"(print A \"+\" B \"=\" (add A B))\r" +
 		")";
+		var now = new Date();
+		console.error("Parsed in " + (now - start) + "ms");
+		start = now;
 		code = Parse(codeStr);
 		console.log(Eval(code, e));
 		console.log("Run in " + (new Date() - start) + "ms");
@@ -477,11 +431,12 @@ helpMode = helpMode || (programFile === undefined);
 if(testMode) {
 	Lispy.Test();
 } else if(helpMode) {
-	console.error(process.argv[1] + " [-d] [-T] [file.lisp] [--] [arguments...]");
+	console.error(process.argv[1] + " [-d] [-T] [-t] [file.lisp] [--] [arguments...]");
 	console.error();
 	console.error("Usage:");
 	console.error("       -d           Enable debug mode");
 	console.error("       -T           Run tests");
+	console.error("       -t           Show timing information");
 	console.error("       file.lisp    File to run");
 	console.error("       --           End Lispy argument passing");
 	console.error("       arguments... Arguments to pass");
@@ -490,6 +445,11 @@ if(testMode) {
 	var fileContent = fs.readFileSync(programFile);
 	var env = new Lispy.Environment();
 	Lispy.AddStdLib(env);
+	var start = new Date();
 	var code = Lispy.Parse(fileContent.toString());
+	var now = new Date();
+	if (timeMode) console.error("Parsed in " + (now - start) + "ms");
+	start = now;
 	Lispy.Eval(code, env);
+	if (timeMode) console.error("Executed in " + (new Date() - start) + "ms");
 }
