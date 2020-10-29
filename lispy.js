@@ -62,6 +62,7 @@ var isdigit = c =>
 
 var Lispy = (function() {
 	function Symbol (name) { this.symbol = name; }
+	Symbol.prototype.toString = function() { return "'" + this.symbol; }
 	function Parse (code) {
 		return read_from(tokenise(code));
 	}
@@ -107,7 +108,7 @@ var Lispy = (function() {
 		return new Symbol(token);
 	}
 	function read_from(tokens) {
-		if (tokens.length === 0) throw new errors.ParserError("Missing opening token");
+		if (tokens.length === 0) throw "Missing opening token";
 
 		var token = tokens.shift();
 		if (token === "(") {
@@ -140,6 +141,9 @@ var Lispy = (function() {
 		this.members = {};
 		this.parent  = parent;
 	}
+	Environment.prototype.toString = function() {
+		return '#Environment';
+	}
 	Environment.prototype.present = function(key) {
 		if(key.constructor === Symbol)
 			key = key.symbol;
@@ -156,9 +160,9 @@ var Lispy = (function() {
 			return this.members[key];
 		if(this.parent !== undefined)
 			return this.parent.get(key);
-		console.error(this.members);
+		//console.error(this.members);
 		console.error('Key not found:', key);
-		throw new KeyNotFoundException(key, this);
+		throw new KeyNotFoundError(key, this);
 	};
 	Environment.prototype.define = function(key, value) {
 		if(key.constructor === Symbol)
@@ -172,7 +176,7 @@ var Lispy = (function() {
 			return this.define(key, value);
 		if(this.parent !== undefined)
 			return this.parent.set(key, value);
-		throw new KeyNotFoundException(key, this);
+		throw new KeyNotFoundError(key, this);
 	};
 	Environment.prototype.update = function(names, values) {
 		if(names.prototype === Symbol) {
@@ -187,6 +191,15 @@ var Lispy = (function() {
 		this.body = body;
 		this.env  = env;
 	}
+	Lambda.prototype.make_callable = function() {
+		return (function(_this) {
+			return function() {
+				var env = new Environment(_this.env);
+				env.update(_this.args, Array.prototype.slice.call(arguments));
+				return Eval(_this.body, env);
+			};
+		})(this);
+	};
 	function Macro (args, body, env) {
 		this.args = args;
 		this.body = body;
@@ -195,17 +208,18 @@ var Lispy = (function() {
 	function Tuple (members) {
 		this.members = members;
 	}
-	function MakeTuple () {
+	function MakeTuple (members) {
 		var tuple = [];
 		tuple.__proto__ = Tuple;
-		tuple.tuple = new Tuple(Array.prototype.slice.call(arguments));
-		for(var i = 0; i < tuple.tuple.members.length; ++i)
-			tuple.push(tuple.tuple.members[i]);
+		tuple.tuple = new Tuple(members);
+		tuple.members = members;
+		for(var i = 0; i < members.length; ++i)
+			tuple.push(members[i]);
 		return tuple;
 	}
 	function Eval (X, Env) {
 		while(true) {
-			if(debugMode) console.error("Eval:", X);
+			if(debugMode) console.error(depth + "\tEval:", X);
 			if(X === undefined || X === null) return X;
 			if(X.constructor === Symbol) return Env.get(X.symbol);
 			if(X.constructor !== Array) return X;
@@ -214,25 +228,15 @@ var Lispy = (function() {
 				first = first.symbol;
 			switch(first) {
 				case 'if': // (if Cond Conseq Alt=Nil)
-					var Cond = X[1];
-					var Conseq = X[2];
-					var Alt = null;
-					if(X.length > 2)
-						Alt = X[3];
-					X = (Eval(Cond, Env) === false) ? Alt : Conseq;
+					var Alt = (X.length > 2) ? X[3] : null;
+					X = Eval(X[1], Env) ? X[2] : Alt;
 					continue; // tail recurse
 				case 'quote': // (quote Exp)
 					return X[1];
 				case 'define': // (define Name Value)
-					var Name = X[1];
-					if(Name.constructor === Symbol)
-						Name = Name.symbol;
-					return Env.define(Name, Eval(X[2], Env));
+					return Env.define(X[1], Eval(X[2], Env));
 				case 'set!': // (set! Name Value) must exist
-					var Name = X[1];
-					if(Name.constructor === Symbol)
-						Name = Name.symbol;
-					return Env.set(Name, Eval(X[2], Env));
+					return Env.set(X[1], Eval(X[2], Env));
 				case 'lambda': // (lambda Args Body)
 					return new Lambda(X[1], X[2], Env);
 				case 'macro': // (macro Args Body)
@@ -241,7 +245,22 @@ var Lispy = (function() {
 					var Exps = X.slice(1);
 					while(Exps.length > 1)
 						Eval(Exps.shift(), Env);
-					return Eval(Exps.shift(), Env);
+					X = Exps.shift();
+					continue;
+				case 'try': // (try Operation ErrorHandler)
+					try {
+						return Eval(X[1], Env);
+					} catch (e) {
+						var handler = Eval(X[2], Env);
+						if (handler.constructor !== Lambda) {
+							console.error("Handler:", handler);
+							throw 'try requires a lambda for exception handler';
+						}
+						var newEnv = new Environment(handler.env);
+						newEnv.update(handler.args, [e]);
+						return Eval(handler.body, newEnv);
+					}
+					throw 'unreachable';
 			}
 			var proc = Eval(X[0], Env);
 			var exps = X.slice(1);
@@ -262,16 +281,28 @@ var Lispy = (function() {
 			} else {
 				console.error("Proc:", proc);
 				console.error("Exps:", exps);
-				throw new InvalidOperationException();
+				throw new InvalidOperationError();
 			}
 		}
 	}
 	var oldEval = Eval;
 	if(debugMode) {
+		var depth = 0;
+		var max_inspect = 32;
+		var util = require('util');
 		Eval = function(X, Env) {
-			console.error("Eval(", X, ")");
-			var result = oldEval(X, Env);
-			console.error("Eval(", X, "):", result);
+			depth++;
+			console.error(depth + "\tEval(", X, ")");
+			var result;
+			try {
+				result = oldEval(X, Env);
+			} catch (e) {
+				depth--;
+				throw e;
+			}
+			var inspected = util.inspect(result).replace(/\r|\n/gm, '').substr(0, max_inspect);
+			console.error(depth + "\tEval(", X, "):", inspected);
+			depth--;
 			return result;
 		};
 	}
@@ -304,6 +335,10 @@ var Lispy = (function() {
 		'<=': Args => Args[0] <= Args[1],
 		'>': Args => Args[0] > Args[1],
 		'>=': Args => Args[0] >= Args[1],
+		'=': Args => Args && Args[0] == Args[1],
+		'!=': Args => Args && Args[0] != Args[1],
+		'===': Args => Args && Args[0] === Args[1],
+		'!==': Args => Args && Args[0] !== Args[1],
 		'to_s': Args => to_s(Args[0]),
 		'print': Args => console.log(Args.join(' ')),
 		'car': Args => Args[0][0],
@@ -326,16 +361,23 @@ var Lispy = (function() {
 		'env:get': Args => Args[0].get(Args[1]),
 		'env:define': Args => Args[0].define(Args[1], Args[2]),
 		'env:set': Args => Args[0].set(Args[1], Args[2]),
+		'env:parent': Args => Args[0].parent,
+		'env:keys': Args => Object.keys(Args[0].members),
 		'dict:new': Args => new Object(),
 		'dict:get': Args => Args[0][to_s(Args[1])],
-		'dict:set': Args => Args[0][to_s(Args[1])] = Args[1],
-		'dict:update': Args => { Args[0][to_s(Args[1])] = Args[1]; return Args[0]; },
+		'dict:set': Args => Args[0][to_s(Args[1])] = Args[2],
+		'dict:update': Args => { Args[0][to_s(Args[1])] = Args[2]; return Args[0]; },
 		'dict:key?': Args => Args.length && Args[0].hasOwnProperty(to_s(Args[1])),
+		'dict:keys': Args => Object.keys(Args[0]),
 		'require': Args => require(to_s(Args[0])),
 		// (js:call Object Method Arguments...)
 		'js:call': Args => {
 			return Args[1].apply(Args[0], Args.slice(2));
 		},
+		// (js:func Lambda) => function
+		'js:func': Args => Args[0].make_callable(),
+		'eval': Args => Eval(Args[0], Args[1]),
+		'parse': Args => Parse(Args[0]),
 	};
 	function AddStdLib (env) {
 		for(var key in StdLib)
@@ -411,6 +453,12 @@ var Lispy = (function() {
 		console.log("Run in " + (new Date() - start) + "ms");
 	}
 
+	function KeyNotFoundError (key, env) {
+		this.name = "KeyNotFoundError";
+		this.message = "Key " + to_s(key) + " not found";
+	}
+	KeyNotFoundError.prototype = Error.prototype;
+
 	return {
 		Symbol: Symbol,
 		Environment: Environment,
@@ -420,6 +468,7 @@ var Lispy = (function() {
 		MakeTuple: MakeTuple,
 		Eval: Eval,
 		AddStdLib: AddStdLib,
+		Parse: Parse,
 		Test: Test
 	};
 })();
@@ -438,6 +487,9 @@ if(testMode) {
 	console.error("       arguments... Arguments to pass");
 	process.exit(1);
 } else {
-	console.log("Target:", programFile);
-	console.log("Arguments:", programArguments);
+	var fileContent = fs.readFileSync(programFile);
+	var env = new Lispy.Environment();
+	Lispy.AddStdLib(env);
+	var code = Lispy.Parse(fileContent.toString());
+	Lispy.Eval(code, env);
 }

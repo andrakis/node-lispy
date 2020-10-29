@@ -1,0 +1,14 @@
+{
+  "name": "lispy",
+  "version": "1.0.0",
+  "description": "Bare-bones Lisp interpreter",
+  "main": "lispy.js",
+  "scripts": {
+    "test": "lispy.js -T"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "readline-sync": "^1.4.10"
+  }
+}
