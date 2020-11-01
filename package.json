@@ -1,6 +1,6 @@
 {
   "name": "lispy",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Bare-bones Lisp interpreter",
   "main": "lispy.js",
   "scripts": {
@@ -8,7 +8,6 @@
   },
   "author": "",
   "license": "ISC",
-  "dependencies": {
-    "readline-sync": "^1.4.10"
-  }
+  "dependencies": {},
+  "repository": "https://github.com/andrakis/node-lispy"
 }

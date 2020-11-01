@@ -216,15 +216,22 @@ var Lispy = (function() {
 		this.body = body;
 		this.env  = env;
 	}
-	Lambda.prototype.make_callable = function() {
-		return (function(_this) {
-			return function() {
-				var env = new Environment(_this.env);
-				env.update(_this.args, Array.prototype.slice.call(arguments));
-				return Eval(_this.body, env);
-			};
-		})(this);
-	};
+	function MakeLambda (args, body, env) {
+		var fn = function() {
+			var targetEnv = new Environment(env);
+			targetEnv.update(args, Array.prototype.slice.call(arguments));
+			return Eval(body, targetEnv);
+		};
+		fn.args = args;
+		fn.body = body;
+		fn.env  = env;
+		fn.__proto__ = Lambda;
+		return fn;
+	}
+	// A SpecialFunction is a function(Arguments, CurrentEnvironment)
+	function SpecialFunction (handler) {
+		this.handler = handler;
+	}
 	function Macro (args, body, env) {
 		this.args = args;
 		this.body = body;
@@ -276,7 +283,7 @@ var Lispy = (function() {
 				case 'set!': // (set! Name Value) must exist
 					return Env.set(X[1], Eval(X[2], Env));
 				case 'lambda': // (lambda Args Body)
-					return new Lambda(X[1], X[2], Env);
+					return MakeLambda(X[1], X[2], Env);
 				case 'macro': // (macro Args Body)
 					return new Macro(X[1], X[2], Env);
 				case 'begin': // (begin Exps)
@@ -286,40 +293,50 @@ var Lispy = (function() {
 					X = Exps.shift();
 					continue;
 				case 'try': // (try Operation ErrorHandler)
+					// ErrorHandler is not evaulated until an error is caught
 					try {
 						return Eval(X[1], Env);
 					} catch (e) {
 						var handler = Eval(X[2], Env);
-						if (handler.constructor !== Lambda) {
+						if (typeof handler !== 'function') {
 							console.error("Handler:", handler);
-							throw 'try requires a lambda for exception handler';
+							throw new InvalidArgumentError('try requires a function/lambda for exception handler');
 						}
-						var newEnv = new Environment(handler.env);
-						newEnv.update(handler.args, [e]);
-						return Eval(handler.body, newEnv);
+						if (handler.__proto__ === Lambda) {
+							var newEnv = new Environment(handler.env);
+							newEnv.update(handler.args, [e]);
+							return Eval(handler.body, newEnv);
+						} else {
+							return handler(e);
+						}
 					}
-					throw 'unreachable';
+					throw new UnreachableError();
 			}
 			var proc = Eval(X[0], Env);
 			var exps = X.slice(1);
 			if(proc.constructor !== Macro)
 				exps = exps.map(Y => Eval(Y, Env));
-			if(proc.constructor === Lambda || proc.constructor === Macro) {
+			if(proc.constructor === Macro) {
 				var newEnv = new Environment(proc.env);
 				newEnv.update(proc.args, exps);
-				if(proc.constructor === Lambda) {
+				X = Eval(proc.body, newEnv);
+				continue; // tail recurse
+			} else if(proc.constructor === SpecialFunction) {
+				return proc.handler(exps, Env);
+			} else if(typeof proc === 'function') {
+				if (proc.__proto__ === Lambda) {
+					var newEnv = new Environment(proc.env);
+					newEnv.update(proc.args, exps);
 					X = proc.body;
 					Env = newEnv;
+					continue; // tail recurse
 				} else {
-					X = Eval(proc.body, newEnv);
+					return proc(...exps);
 				}
-				continue; // tail recurse
-			} else if(typeof proc === 'function') {
-				return proc(exps, Env);
 			} else {
 				console.error("Proc:", proc);
 				console.error("Exps:", exps);
-				throw new InvalidOperationError();
+				throw new InvalidOperationError(proc);
 			}
 		}
 	}
@@ -346,6 +363,10 @@ var Lispy = (function() {
 		if(val.prototype === Symbol) return val.symbol;
 		return val.toString();
 	}
+	var slice = Array.prototype.slice,
+	    join  = Array.prototype.join,
+	    reduce = Array.prototype.reduce;
+
 	// To avoid new functions being created each call to the +, -, *, and / operators,
 	// their logic functions are created here and then just referenced in
 	// the operator logic.
@@ -354,64 +375,79 @@ var Lispy = (function() {
 		'*': (a, n) => a * n, '/': (a, n) => a / n,
 	};
 	var StdLib = {
-		'undefined': Args => undefined,
-		'nil': Args => null,
-		'false': Args => false,
-		'true': Args => true,
+		'undefined': undefined,
+		'nil': null,
+		'false': false,
+		'true': true,
 		// Uses cached operators to avoid creating new function enclosures.
 		// All four mathematical operators can be implemented using the reduce
 		// method.
-		'+': Args => Args.reduce(ops['+']),
-		'-': Args => Args.reduce(ops['-']),
-		'*': Args => Args.reduce(ops['*']),
-		'/': Args => Args.reduce(ops['/']),
-		'<': Args => Args[0] < Args[1],
-		'<=': Args => Args[0] <= Args[1],
-		'>': Args => Args[0] > Args[1],
-		'>=': Args => Args[0] >= Args[1],
-		'=': Args => Args && Args[0] == Args[1],
-		'!=': Args => Args && Args[0] != Args[1],
-		'===': Args => Args && Args[0] === Args[1],
-		'!==': Args => Args && Args[0] !== Args[1],
-		'to_s': Args => to_s(Args[0]),
-		'print': Args => console.log(Args.join(' ')),
-		'car': Args => Args[0][0],
-		'cdr': Args => Args.slice(1),
-		'cons': Args => Args[0].concat(Args[1]),
-		'equal?': Args => Args[0] === Args[1],
-		'length': Args => Args[0].length,
-		'list': Args => Args,
-		'list?': Args => Args[0] && Args[0].prototype === Array,
-		'not': Args => !Args[0],
-		'null?': Args => Args.length && (!Args[0] || Args[0].length === 0),
-		'number?': Args => Args.length && typeof Args[0] === 'number',
-		'procedure?': Args => Args.length && typeof Args[0].prototype === 'function',
-		'symbol?': Args => Args.length && Args[0].prototype === Symbol,
-		'lambda?': Args => Args.length && Args[0].prototype === Lambda,
-		'macro?': Args => Args.length && Args[0].prototype === Macro,
-		'env?': Args => Args.length && Args[0].prototype === Environment,
-		'env:current': (Args, Env) => Env,
-		'env:new': Args => new Environment(Args[0]),
-		'env:get': Args => Args[0].get(Args[1]),
-		'env:define': Args => Args[0].define(Args[1], Args[2]),
-		'env:set': Args => Args[0].set(Args[1], Args[2]),
-		'env:parent': Args => Args[0].parent,
-		'env:keys': Args => Object.keys(Args[0].members),
-		'dict:new': Args => new Object(),
-		'dict:get': Args => Args[0][to_s(Args[1])],
-		'dict:set': Args => Args[0][to_s(Args[1])] = Args[2],
-		'dict:update': Args => { Args[0][to_s(Args[1])] = Args[2]; return Args[0]; },
-		'dict:key?': Args => Args.length && Args[0].hasOwnProperty(to_s(Args[1])),
-		'dict:keys': Args => Object.keys(Args[0]),
-		'require': Args => require(to_s(Args[0])),
-		// (js:call Object Method Arguments...)
-		'js:call': Args => {
-			return Args[1].apply(Args[0], Args.slice(2));
+		'+': function() { return reduce.call(arguments, ops['+']); },
+		'-': function() { return reduce.call(arguments, ops['-']); },
+		'*': function() { return reduce.call(arguments, ops['*']); },
+		'/': function() { return reduce.call(arguments, ops['/']); },
+		'<': (a, b) => a < b,
+		'<=':(a, b) => a <= b,
+		'>': (a, b) => a > b,
+		'>=':(a, b) => a >= b,
+		'=': (a, b) => a == b,
+		'!=':(a, b) => a != b,
+		'===': (a, b) => a === b,
+		'!==': (a, b) => a !== b,
+		'to_s': x => to_s(x),
+		'split': (s, r) => s.split(r),
+		'regexp': (pattern, flags) => new RegExp(pattern, flags),
+		'print': function() { console.log(join.call(arguments, ' ')) },
+		'log': function() { console.log(...arguments); },
+		'car': x => x[0],
+		'head': x => x[0],
+		'cdr': x => x.slice(1),
+		'tail': x => x.slice(1),
+		'cons': (a, b) => a.concat(b),
+		'equal?': (a, b) => a === b,
+		'length': x => x.length,
+		'list': function() { return slice.call(arguments); },
+		'list?': x => x.prototype === Array,
+		'map': (list, callback) => list.map(callback),
+		'not': x => !x,
+		'and': (a, b) => a && b,
+		'or': (a, b) => a || b,
+		'null?': x => (!x || x.length === 0),
+		'number?': x => typeof x === 'number',
+		'procedure?': x => typeof x.prototype === 'function' && x.__proto__ !== Lambda,
+		'symbol?': x => x.prototype === Symbol,
+		'lambda?': x => x.__proto__ === Lambda,
+		'macro?': x => x.prototype === Macro,
+		'env?': x => x.prototype === Environment,
+		'env:current': new SpecialFunction((Args, Env) => Env),
+		'env:new': pEnv => new Environment(pEnv),
+		'env:get': (env, key) => env[key],
+		'env:define': (env, key, value) => env.define(key, value),
+		'env:set': (env, key, value) => env.set(key, value),
+		'env:parent': env => env.parent,
+		'env:keys': env => Object.keys(env.members),
+		'dict:new': () => new Object(),
+		'dict:get': (dict, key) => dict[to_s(key)],
+		'dict:set': (dict, key, value) => dict[to_s(key)] = value,
+		'dict:update': (dict, key, value) => {
+			dict[to_s(key)] = value;
+			return dict;
 		},
-		// (js:func Lambda) => function
-		'js:func': Args => Args[0].make_callable(),
-		'eval': Args => Eval(Args[0], Args[1]),
-		'parse': Args => Parse(Args[0]),
+		'dict:key?': (dict, key) => to_s(key) in dict,
+		'dict:keys': dict => Object.keys(dict),
+		'require': path => require(path),
+		// (js:call Object Method Arguments...)
+		'js:call': function() {
+			var obj = arguments[0];
+			var method = arguments[1];
+			var args = slice.call(arguments, 2);
+			return obj[method](...args);
+		},
+		'eval': (x, env) => Eval(x, env),
+		'parse': s => Parse(s),
+		'stdin': () => process.stdin,
+		'stdout': () => process.stdout,
+		'inspect': obj => util.inspect(obj),
 	};
 	function AddStdLib (env) {
 		for(var key in StdLib)

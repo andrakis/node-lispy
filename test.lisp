@@ -22,6 +22,6 @@
 	(print "Fac2" B "=" (fac2 B))
 	(define FS (require "fs"))
 	(print "Size of lispy.js:"
-		(length (to_s (js:call FS (dict:get FS "readFileSync") "lispy.js"))))
+		(length (to_s (js:call FS "readFileSync" "lispy.js"))))
 )
 
