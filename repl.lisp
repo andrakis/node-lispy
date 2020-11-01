@@ -5,7 +5,7 @@
 ;; rest of the line via a "...>" prompt. You can cancel this by typing \c
 ;;
 (begin
-	(define Env (env:new (env:current)))
+	(define Env (env:new (env:parent (env:current))))
 	(define Readline (require "readline"))
 
 	(define PromptDefault "Lispy> ")
@@ -25,19 +25,19 @@
 		(dict:set Commands Command (command-new Description Body))))
 
 	;; REPL commands
-	(add-command "usage" "Display usage of REPL" (lambda () (begin
+	(add-command 'usage "Display usage of REPL" (lambda () (begin
 		(print "Welcome to Lispy REPL")
-		(print "Type \q to quit, \? for commands")
+		(print "Type \\q to quit, \\? for commands")
 	)))
-	(add-command "\q" "Quit the REPL" (lambda () (begin
+	(add-command '\q "Quit the REPL" (lambda () (begin
 		(set! ExitFlag true)
-		(js:call RL "close")
+		(RL 'close)
 	)))
-	(add-command "\c" "Cancel current line input or continuation" (lambda () (begin
+	(add-command '\c "Cancel current line input or continuation" (lambda () (begin
 		(set! ContinuationFlag false)
-		(js:call RL "setPrompt" PromptDefault)
+		(RL 'setPrompt PromptDefault)
 	)))
-	(add-command "\?" "Display help in general, or on specific command" (lambda (Args) (begin
+	(add-command '\? "Display help in general, or on specific command" (lambda (Args) (begin
 		(define Target nil)
 		(if (> (length Args) 0)
 			(set! Target (head Args)))
@@ -54,7 +54,7 @@
 		(if ContinuationFlag (begin
 			(set! ContinuationFlag false)
 			(set! Line (+ ContinuedLine Line))
-			(js:call RL "setPrompt" PromptDefault)
+			(RL 'setPrompt PromptDefault)
 		))
 			
 		(define ParseError false)
@@ -74,15 +74,15 @@
 		(try
 			(print (eval Code Env))
 			(lambda (E) (begin
-				(define EName (dict:get E "name"))
-				(print (dict:get E "stack"))
+				(define EName (dict:get E 'name))
+				(print (dict:get E 'message))
 			))
 		)
 	))
 	(define then-continuation (lambda (Input) (begin
 		(set! ContinuationFlag true)
 		(set! ContinuedLine Input)
-		(js:call RL "setPrompt" PromptContinuation)
+		(RL 'setPrompt PromptContinuation)
 	)))
 
 	(define execute (lambda (Input) (begin
@@ -93,22 +93,22 @@
 			(parse-then-run Input)
 		)
 		(if (not ExitFlag)
-			(js:call RL "prompt")
+			(RL 'prompt)
 		)
 	)))
 
 	;; REPL startup
 	(define ReadlineOpts (dict:new))
-	(dict:update ReadlineOpts "input" (stdin))
-	(dict:update ReadlineOpts "output" (stdout))
-	(dict:update ReadlineOpts "prompt" PromptDefault)
-	(define RL ((dict:get Readline "createInterface") ReadlineOpts))
-	(js:call RL "on" "line" (lambda (Input) (begin
+	(dict:update ReadlineOpts 'input (stdin))
+	(dict:update ReadlineOpts 'output (stdout))
+	(dict:update ReadlineOpts 'prompt PromptDefault)
+	(define RL ((dict:get Readline 'createInterface) ReadlineOpts))
+	(RL 'on "line" (lambda (Input) (begin
 		(execute Input)
 	)))
 
 	;; Display usage and then prompt
-	(command! "usage")
-	(js:call RL "prompt")
+	(command! 'usage)
+	(RL 'prompt)
 )
 

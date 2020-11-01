@@ -1,10 +1,10 @@
 {
   "name": "lispy",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Bare-bones Lisp interpreter",
-  "main": "lispy.js",
+  "main": "index.js",
   "scripts": {
-    "test": "lispy.js -T"
+    "test": "./index.js test.lisp"
   },
   "author": "",
   "license": "ISC",

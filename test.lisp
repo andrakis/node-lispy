@@ -1,5 +1,7 @@
 ;; A sample file testing a few features, including reading a file
 (begin
+	(define get-args (lambda Args Args))
+	(print (get-args 1 2 3))
 	(print "Hello, world!")
 	(define add (lambda (X Y) (+ X Y)))
 	(define A 5)
@@ -22,6 +24,5 @@
 	(print "Fac2" B "=" (fac2 B))
 	(define FS (require "fs"))
 	(print "Size of lispy.js:"
-		(length (to_s (js:call FS "readFileSync" "lispy.js"))))
+		(length (to_s (FS 'readFileSync "lispy.js"))))
 )
-
