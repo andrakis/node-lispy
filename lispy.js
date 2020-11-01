@@ -21,6 +21,7 @@
 "use strict";
 
 var fs = require('fs');
+var util = require('util');
 
 var debugMode = false;
 var testMode  = false;
@@ -111,16 +112,16 @@ var Lispy = (function() {
 		return new Symbol(token);
 	}
 	function read_from(tokens) {
-		if (tokens.length === 0) throw "Missing opening token";
+		if (tokens.length === 0) throw new ParserError("Missing opening token");
 
 		var token = tokens.shift();
 		if (token === "(") {
 			var cells = [];
 			while (tokens[0] !== ")") {
 				cells.push(read_from(tokens));
-				if (tokens.length === 0) throw "Missing closing )";
+				if (tokens.length === 0) throw new ParserError("Missing closing )");
 			}
-			if (tokens.length === 0) throw "Missing closing )";
+			if (tokens.length === 0) throw new ParserError("Missing closing )");
 			tokens.shift(); // discard closing )
 			return cells;
 		} else if (token === "'") {
@@ -163,9 +164,30 @@ var Lispy = (function() {
 			return this.members[key];
 		if(this.parent !== undefined)
 			return this.parent.get(key);
-		//console.error(this.members);
+		this.dump();
 		console.error('Key not found:', key);
 		throw new KeyNotFoundError(key, this);
+	};
+	Environment.prototype.dump = function() {
+		var depth = 0;
+		var target = this;
+		var lines = [];
+		while(target.parent) depth++;
+		target = this;
+		do {
+			var spacer = ' '.repeat(depth);
+			lines.push(spacer + " }");
+			for(var key in target.members) {
+				var v = target.members[key];
+				if (v === null) v = "null";
+				else if(v === undefined) v = "undefined";
+				lines.push(spacer + " => " + v.toString());
+			}
+			lines.push(spacer + " { parent: " + (!!target.parent));
+			depth--;
+			target = target.parent;
+		} while(target);
+		console.error(lines.reverse().join("\n"));
 	};
 	Environment.prototype.define = function(key, value) {
 		if(key.constructor === Symbol)
@@ -220,9 +242,22 @@ var Lispy = (function() {
 			tuple.push(members[i]);
 		return tuple;
 	}
+	function inspect (obj, maxlength) {
+		if (obj === undefined) return "'undefined";
+		if (obj === null) return "'nil";
+		if (obj.constructor === Symbol)
+			return "'" + obj.symbol;
+		if (obj.constructor === Array)
+			return "[" + obj.map(inspect).join(' ').substr(0, maxlength) + "]";
+		return util.inspect(obj).
+			replace(/\r|\n/gm, '').
+			substr(0, maxlength);
+	}
+	var shortInspectLength = 20;
+	var longInspectLength  = 40;
 	function Eval (X, Env) {
 		while(true) {
-			if(debugMode) console.error(depth + "\tEval:", X);
+			if(debugMode) console.error(depth + "\tEval(", inspect(X, shortInspectLength), ")");
 			if(X === undefined || X === null) return X;
 			if(X.constructor === Symbol) return Env.get(X.symbol);
 			if(X.constructor !== Array) return X;
@@ -289,13 +324,10 @@ var Lispy = (function() {
 		}
 	}
 	var oldEval = Eval;
+	var depth = 0;
 	if(debugMode) {
-		var depth = 0;
-		var max_inspect = 32;
-		var util = require('util');
 		Eval = function(X, Env) {
 			depth++;
-			console.error(depth + "\tEval(", X, ")");
 			var result;
 			try {
 				result = oldEval(X, Env);
@@ -303,8 +335,7 @@ var Lispy = (function() {
 				depth--;
 				throw e;
 			}
-			var inspected = util.inspect(result).replace(/\r|\n/gm, '').substr(0, max_inspect);
-			console.error(depth + "\tEval(", X, "):", inspected);
+			console.error(depth + "\tEval(", inspect(X, shortInspectLength), "):",  inspect(result, longInspectLength));
 			depth--;
 			return result;
 		};
@@ -407,11 +438,36 @@ var Lispy = (function() {
 		console.log("Run in " + (new Date() - start) + "ms");
 	}
 
-	function KeyNotFoundError (key, env) {
-		this.name = "KeyNotFoundError";
-		this.message = "Key " + to_s(key) + " not found";
+	class KeyNotFoundError extends Error {
+		constructor(key, env) {
+			super("Key " + to_s(key) + " not found");
+			this.name = "KeyNotFoundError";
+		}
 	}
-	KeyNotFoundError.prototype = Error.prototype;
+	class ParserError extends Error {
+		constructor(reason) {
+			super(reason);
+			this.name = "ParserError";
+		}
+	}
+	class InvalidArgumentError extends Error {
+		constructor(message) {
+			super(message);
+			this.name = "InvalidArgumentError";
+		}
+	}
+	class InvalidOperationError extends Error {
+		constructor(operation) {
+			super("Invalid operation");
+			this.name = "InvalidOperationError";
+		}
+	}
+	class UnreachableError extends Error {
+		constructor() {
+			super("This code should not be reachable");
+			this.name = "UnreachableError";
+		}
+	}
 
 	return {
 		Symbol: Symbol,
