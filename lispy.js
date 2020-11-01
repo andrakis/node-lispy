@@ -358,9 +358,10 @@ var Lispy = (function() {
 					return proc(...exps);
 				}
 			} else {
-				console.error("Proc:", proc);
-				console.error("Exps:", exps);
-				throw new InvalidOperationError(proc);
+				// Interepreted as a call to a member function
+				var method = to_s(exps[0]);
+				var args = exps.slice(1);
+				return proc[method](...args);
 			}
 		}
 	}
@@ -470,13 +471,6 @@ var Lispy = (function() {
 		'dict:key?': (dict, key) => to_s(key) in dict,
 		'dict:keys': dict => Object.keys(dict),
 		'require': path => require(path),
-		// (js:call Object Method Arguments...)
-		'js:call': function() {
-			var obj = arguments[0];
-			var method = arguments[1];
-			var args = slice.call(arguments, 2);
-			return obj[method](...args);
-		},
 		'eval': (x, env) => Eval(x, env),
 		'parse': s => Parse(s),
 		'stdin': () => process.stdin,
