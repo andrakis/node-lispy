@@ -155,8 +155,7 @@ class Environment {
 			return this.members[key];
 		if(this.parent !== undefined)
 			return this.parent.get(key, (from || this));
-		from.dump();
-		throw new KeyNotFoundError(key, this);
+		throw new KeyNotFoundError(key, from);
 	};
 	dump() {
 		var depth = 0;
@@ -174,13 +173,13 @@ class Environment {
 				else if(v === undefined) v = "undefined";
 				else if(typeof v === 'function' && v.__proto__ === Lambda)
 					v = v.lambda.toString();
-				lines.push(spacer + "  " + key + " => " + v.toString());
+				lines.push(spacer + "  '" + key + " => " + v.toString());
 				memberCount++;
 			}
 			lines.push(spacer + "{ parent: " + (!!target.parent) + ", count: " + memberCount);
 			depth--;
 			target = target.parent;
-		} while(target.parent);
+		} while(target && target.parent);
 		console.error(lines.reverse().join("\n"));
 	}
 	define(key, value) {
@@ -229,6 +228,7 @@ class SpecialFunction {
 	constructor(handler) {
 		this.handler = handler;
 	}
+	toString() { return this.handler.toString(); }
 }
 class Macro {
 	constructor(args, body, env) {
@@ -264,9 +264,10 @@ function inspect (obj, maxlength) {
 }
 var shortInspectLength = 20;
 var longInspectLength  = 40;
-function Eval (X, Env) {
+function NormalEval (X, Env) {
 	while(true) {
-		if(debugMode) console.error(depth + "\tEval(", inspect(X, shortInspectLength), ")");
+		if(debugMode)
+			console.error(depthStr() + "Eval(", inspect(X, shortInspectLength), ")");
 		if(X === undefined || X === null) return X;
 		if(X.constructor === Symbol) return Env.get(X.symbol);
 		if(X.constructor !== Array) return X;
@@ -282,6 +283,8 @@ function Eval (X, Env) {
 				return X[1];
 			case 'define': // (define Name Value)
 				return Env.define(X[1], Eval(X[2], Env));
+			case 'defined?': // (defined? Name)
+				return Env.present(X[1]);
 			case 'set!': // (set! Name Value) must exist
 				return Env.set(X[1], Eval(X[2], Env));
 			case 'lambda': // (lambda Args Body)
@@ -344,23 +347,33 @@ function Eval (X, Env) {
 		}
 	}
 }
-var oldEval = Eval;
-var depth = 0;
-if(debugMode) {
-	Eval = function(X, Env) {
-		depth++;
-		var result;
-		try {
-			result = oldEval(X, Env);
-		} catch (e) {
-			depth--;
-			throw e;
-		}
-		console.error(depth + "\tEval(", inspect(X, shortInspectLength), "):",  inspect(result, longInspectLength));
-		depth--;
-		return result;
-	};
+function depthStr () {
+	var str = "";
+	if (depth < 20)
+		str = "=".repeat(depth - 1) + " | ";
+	else
+		str = "=                " + depth + " | ";
+	return str;
 }
+function DebugEval (X, Env) {
+	depth++;
+	var result;
+	try {
+		result = NormalEval(X, Env);
+	} catch (e) {
+		depth--;
+		throw e;
+	}
+	console.error(depthStr() + "Eval(", inspect(X, shortInspectLength), "):",  inspect(result, longInspectLength));
+	depth--;
+	return result;
+}
+var Eval = NormalEval;
+var depth = 0;
+function SetDebug (debug) {
+	Eval = debug ? DebugEval : NormalEval;
+}
+
 // to_s: convert to string simply
 function to_s (val) {
 	if(val === undefined) return 'undefined';
@@ -391,6 +404,37 @@ var ops = {
 function ManyArgs (Callback) {
 	return function() { return Callback(slice.call(arguments)); }
 }
+var Types = {
+	'undefined': new Symbol("undefined"),
+	'nil': new Symbol("nil"),
+	'number': new Symbol("number"),
+	'string': new Symbol("string"),
+	'symbol': new Symbol("symbol"),
+	'list': new Symbol("list"),
+	'object': new Symbol("object"),
+	'environment': new Symbol('environment'),
+	'lambda': new Symbol('lambda'),
+	'macro': new Symbol('macro'),
+	'proc': new Symbol('proc')
+};
+function LispyTypeOf (x) {
+	if (x === undefined) return Types['undefined'];
+	if (x === null) return Types['nil'];
+	if (x.constructor === Array) return Types['list'];
+	if (typeof x === 'number') return Types['number'];
+	if (typeof x === 'string') return Types['string'];
+	if (x.constructor === Symbol) return Types['symbol'];
+	if (typeof x === 'function') {
+		if (x.__proto__ == Lambda)
+			return Types['lambda'];
+		return Types['proc'];
+	}
+	if (x.constructor === SpecialFunction) return Types['proc'];
+	if (x.constructor === Macro) return Types['macro'];
+	if (x.constructor === Environment) return Types['environment'];
+	if (typeof x === 'object') return Types['object'];
+	throw new UnexpectedInputError("Unknown object type: " + typeof x);
+}
 var StdLib = {
 	'undefined': undefined,
 	'nil': null,
@@ -413,6 +457,7 @@ var StdLib = {
 	'!==': (a, b) => a !== b,
 	'to_s': x => to_s(x),
 	'split': (s, r) => s.split(r),
+	'join': (s, j) => s.join(j),
 	'regexp': (pattern, flags) => new RegExp(pattern, flags),
 	'print': ManyArgs(Args => console.log(Args.map(to_string).join(' '))),
 	'log': ManyArgs(Args => console.log(...Args)),
@@ -420,12 +465,14 @@ var StdLib = {
 	'head': x => x[0],
 	'cdr': x => x.slice(1),
 	'tail': x => x.slice(1),
+	'slice': ManyArgs(Args => Args[0].slice(...Args.slice(1))),
 	'cons': (a, b) => a.concat(b),
 	'equal?': (a, b) => a === b,
 	'length': x => x.length,
 	'list': ManyArgs(Args => Args),
 	'list?': x => x.constructor === Array,
 	'map': (list, callback) => list.map(callback),
+	'each': (list, callback) => list.forEach(callback),
 	'reduce': (list, callback) => list.reduce(callback),
 	'not': x => !x,
 	'and': (a, b) => a && b,
@@ -437,11 +484,14 @@ var StdLib = {
 	'lambda?': x => x.__proto__ === Lambda,
 	'macro?': x => x.constructor === Macro,
 	'env?': x => x.constructor === Environment,
+	'typeof': x => LispyTypeOf(x),
 	'env:current': new SpecialFunction((Args, Env) => Env),
 	'env:new': pEnv => new Environment(pEnv),
 	'env:get': (env, key) => env[key],
 	'env:define': (env, key, value) => env.define(key, value),
+	'env:defined?': (env, key) => env.present(key),
 	'env:set': (env, key, value) => env.set(key, value),
+	'env:dump': env => env.dump(),
 	'env:parent': env => env.parent,
 	'env:keys': env => Object.keys(env.members),
 	'dict:new': () => new Object(),
@@ -470,12 +520,19 @@ class KeyNotFoundError extends Error {
 	constructor(key, env) {
 		super("Key " + to_s(key) + " not found");
 		this.name = "KeyNotFoundError";
+		env.dump();
 	}
 }
 class ParserError extends Error {
 	constructor(reason) {
 		super(reason);
 		this.name = "ParserError";
+	}
+}
+class UnexpectedInputError extends Error {
+	constructor(message) {
+		super(message);
+		this.name = "UnexpectedInputError";
 	}
 }
 class InvalidArgumentError extends Error {
@@ -534,6 +591,7 @@ function Main () {
 		console.error("       --           End Lispy argument passing");
 		console.error("       arguments... Arguments to pass");
 	} else {
+		SetDebug(debugMode);
 		var fileContent = fs.readFileSync(programFile);
 		var globalEnv = new Environment();
 		AddStdLib(globalEnv);
