@@ -12,8 +12,16 @@
 	;; ===============================================
 	;; Required Node.js modules
 	;; ===============================================
-	(define Readline (require "readline"))
-	(define FS (require "fs"))
+	(define readline (require "readline"))
+	(define fs (require "fs"))
+
+	;; ===============================================
+	;; Optional Node.js modules
+	;; ===============================================
+	(define try-require (lambda (Path)
+		(try (require Path)
+		     (lambda (E) nil))))
+	(define rmt (try-require "readline-matchtoken"))
 
 	;; ===============================================
 	;; Configurable options
@@ -22,6 +30,8 @@
 	(define PromptContinuation "  ...> ")
 	(define MaximumHistoryLines 200)
 	(define HistoryFile ".repl.lisp.history")
+	(define BuiltinKeywords (list "if" "quote" "define" "defined?"
+		"set!" "lambda" "macro" "begin" "try"))
 
 	;; ===============================================
 	;; REPL state
@@ -30,8 +40,14 @@
 	(define ContinuationFlag false)
 	(define ContinuedLine "")
 	(define ShowStackFlag false)
+	(define ShowParserErrorFlag false)
 	(define AbortOnInterruptFlag false)
-	(define Env (env:new (env:parent (env:current)))) ;; REPL environment
+	(define DebugEvalFlag false)
+	(define OriginalDebugEvalFlag (kernel:debug?))
+	(define TimingFlag false)
+	;; REPL environment - created with our parent as parent.
+	;; This decouples the REPL state from the environment code will run in.
+	(define ReplEnv (env:new (env:parent (env:current))))
 
 	;; ===============================================
 	;; REPL commands interface
@@ -43,8 +59,11 @@
 	(define command-desc (lambda (C) (head (tail C)))) ;; ['command (Desc) Help Body]
 	(define command-help (lambda (C) (head (tail (tail C))))) ;; ['command Desc (Help) Body]
 	(define command-body (lambda (C) (head (tail (tail (tail C)))))) ;; ['command Desc Help (Body)]
-	(define add-command (lambda (Command Description Help Body)
+	(define add-command  (lambda (Command Description Help Body)
 		(dict:set Commands Command (command-new Description Help Body))))
+
+	(define get-commands (lambda ()
+		((dict:keys Commands) 'filter (lambda (C) (length C)))))
 
 	;; ===============================================
 	;; REPL commands
@@ -65,10 +84,7 @@
 		"Quit the REPL"
 		""
 		(lambda () (begin
-			(set! ExitFlag true)
-			;; Save history to file
-			(write-history)
-			(RL 'close)
+			(quit)
 		))
 	)
 
@@ -82,23 +98,25 @@
 		))
 	)
 
-	;; \? [command]
+	;; \? [command...]
 	(add-command '\?
-		"Display help in general, or on specific command"
-		"Usage: \\? [command]"
+		"Display help in general, or on specific command(s)"
+		"Usage: \\? [command...]"
 		(lambda (Args) (begin
-			(print "\\? [command]\t For help on a specific command")
-			(define Target nil)
-			(if (> (length Args) 0)
-				(set! Target (head Args)))
-			(each (dict:keys Commands) (lambda (Key)
-				(if (not (= Key "")) (begin
+			(print "\\? [command...]\t For help on a specific command(s)")
+			(define Targets
+				(if (null? Args)
+					(list undefined)
+					Args))
+			(each (get-commands) (lambda (Key)
+				(each Targets (lambda (Target)
 					(if (= Target nil)
-						(print Key "\t\t" (command-desc (dict:get Commands Key))))
-					(if (= Target Key) (begin
 						(print Key "\t\t" (command-desc (dict:get Commands Key)))
-						(print "  " (command-help (dict:get Commands Key)))
-					))
+						(if (= Target Key) (begin
+							(print Key "\t\t" (command-desc (dict:get Commands Key)))
+							(print "  " (command-help (dict:get Commands Key)))
+						))
+					)
 				))
 			))
 		))
@@ -112,8 +130,55 @@
 			(print "Stack tracing is now" (if ShowStackFlag "on" "off"))
 		))
 	)
+
+	;; \p
+	(add-command '\p "Toggle parser error display"
+		"Toggle displaying parser errors"
+		(lambda () (begin
+			(set! ShowParserErrorFlag (not ShowParserErrorFlag))
+			(print "Parser error display is now" (if ShowParserErrorFlag "on" "off"))
+		))
+	)
+
+	;; \d [true|false]
+	(add-command '\d "Toggle debug mode for evaluator"
+		"\\d [true|false]    Toggle if no argument given, or enable if true is passed."
+		(lambda (Args) (begin
+			(if (null? Args)
+				(set! DebugEvalFlag (not DebugEvalFlag))
+				(set! DebugEvalFlag (truthy? (head Args))))
+			(print "Debug mode is now" (if DebugEvalFlag "on" "off"))
+		))
+	)
+
+	;; \t [true|false]
+	(add-command '\t "Toggle timing mode for evaluator"
+		"\\t [true|false]    Toggle if no argument given, or enable if true is passed."
+		(lambda (Args) (begin
+			(if (null? Args)
+				(set! TimingFlag (not TimingFlag))
+				(set! TimingFlag (truthy? (head Args))))
+			(print "Timing mode is now" (if TimingFlag "on" "off"))
+		))
+	)
+
 	;; Empty input does nothing
-	(add-command "" "" (lambda () false))
+	(add-command "" "" "" (lambda () false))
+
+	;; Command utility functions
+	(define cleanup (lambda () (begin
+		(write-history)
+	)))
+	(define quit (lambda () (begin
+		(set! ExitFlag true)
+		(RL 'close)
+		;; History will be written to file by the closed handler above
+	)))
+	(define truthy? (lambda (Val)
+		(if (= undefined Val)
+			false
+			(not (= "false" (to_s Val))))
+	))
 
 	;; ===============================================
 	;; REPL internal
@@ -130,20 +195,32 @@
 		(try
 			(set! Parsed (parse Line))
 			(lambda (E) (begin
-				;;(print "Error in parsing:" (dict:get E "stack"))
 				(set! ParseError true)
+				(if ShowParserErrorFlag
+					(print "Error in parsing:" (dict:get E "stack"))
+				)
 			))
 		)
 		(if ParseError
 			(then-continuation Line)
 			(then-run Parsed))
 	)))
+	(define do-eval (lambda (Code) (begin
+		(define Start (date))
+		(if DebugEvalFlag
+			(kernel:debug true))
+		(define ReplResult (eval Code ReplEnv))
+		(kernel:debug OriginalDebugEvalFlag)
+		(if TimingFlag
+			(print "Run in" (- (date) Start) "ms"))
+		ReplResult
+	)))
 	(define then-run (lambda (Code)
 		(try
-			(print (eval Code Env))
+			(print (do-eval Code))
 			(lambda (E) (begin
 				(define EName (dict:get E 'name))
-				(if ShowStackFlag 
+				(if ShowStackFlag
 					(print (dict:get E 'stack))
 					(print (dict:get E 'message))
 				)
@@ -156,7 +233,10 @@
 		(RL 'setPrompt PromptContinuation)
 	)))
 	(define execute (lambda (Input) (begin
-		(define Words (split Input " "))
+		;; Split Input into Words, filtering empty ones
+		(define Words
+			((split Input " ")
+			 'filter (lambda (W) (length W))))
 		(define First (head Words))
 		(if (command? First)
 			(command! First (tail Words))
@@ -169,9 +249,9 @@
 
 	(define setup-handlers (lambda () (begin
 		;; Line input handler
-		(RL 'on "line" (lambda (Input) (begin
-			(execute Input)
-		)))
+		(RL 'on "line" execute)
+		;; Line closed handler
+		(RL 'on "close" cleanup)
 		;; CTRL+C
 		(RL 'on "SIGINT" (lambda ()
 			(if ContinuationFlag
@@ -181,7 +261,7 @@
 				)
 				(begin         ;; else
 					(if AbortOnInterruptFlag
-						(command! '\q) ;; quit
+						(quit)
 						(begin         ;; else
 							(print "\nUse \\q to quit, or press CTRL+C again to force quit")
 							(set! AbortOnInterruptFlag true)
@@ -191,26 +271,62 @@
 				)
 			)
 		))
+		;; SIGCONT - when foreground is restored
+		(RL 'on "SIGCONT" (lambda ()
+			;; Resume the input
+			(RL 'prompt)
+		))
+	)))
+
+	;; ===============================================
+	;; Tab completer
+	;; ===============================================
+	;; This RegExp defines all the separators available in Lispy
+	(define SeparatorRegExp (regexp "( |\\(|\\[|{|\\)|\\]|})"))
+	;; We can only use the callback wrapper version of the tab completer due
+	;; to the way JavaScript functions report parameter counts, and readline's
+	;; usage of such to determine the callback type.
+	(define TabCompleter (lambda (Line) (begin
+		;; Split line by separators
+		(define LineSplit (Line 'split SeparatorRegExp))
+		;; We match on only the last word from the line
+		(define Word (last LineSplit))
+		;; The rest of the line is rejoined to form the prefix
+		(define LinePre (join (LineSplit 'slice 0 (- (length LineSplit) 1)) ""))
+		;; Keys are: all builtins plus all environment keys
+		(define Keys (concat BuiltinKeywords (env:keys ReplEnv)))
+		;; Hits are: all Keys that start with our current Word
+		(define Hits (Keys 'filter (lambda (C) (C 'startsWith Word))))
+		;; Prepend the line prefix to all results. Funky things happen
+		;; if we do not do this.
+		(set! Keys (map Keys (lambda (K) (+ LinePre K))))
+		(set! Hits (map Hits (lambda (H) (+ LinePre H))))
+		;; return: [ [Candidate...] OriginalLine ]
+		(list (if (null? Hits) Keys Hits) Line)
 	)))
 
 	;; ===============================================
 	;; History file management
 	;; ===============================================
 	(define read-history (lambda ()
-		(split (FS 'readFileSync HistoryFile "utf8") "\n")))
+		(try
+			(split (fs 'readFileSync HistoryFile "utf8") "\n")
+			(catch (lambda (E) (list))) ;; Return no history on error
+		)
+	))
 	(define write-history (lambda ()
 		(try
-			(FS 'writeFileSync HistoryFile
+			(fs 'writeFileSync HistoryFile
 				(join
 					;; Only take most recent lines up to MaximumHistoryLines
 					(slice (dict:get RL "history") 0 MaximumHistoryLines)
 					"\n"))
 			;; catch
-			(lambda (E) nil) ;; ignored
+			(lambda (E) 'fail)
 		)
 	))
 	(define setup-history (lambda ()
-		(if (FS 'existsSync HistoryFile)
+		(if (fs 'existsSync HistoryFile)
 			(dict:set RL "history" (read-history))
 		)
 	))
@@ -222,7 +338,11 @@
 	(dict:update ReadlineOpts 'input (stdin))
 	(dict:update ReadlineOpts 'output (stdout))
 	(dict:update ReadlineOpts 'prompt PromptDefault)
-	(define RL ((dict:get Readline 'createInterface) ReadlineOpts))
+	(dict:update ReadlineOpts 'completer TabCompleter)
+	(define RL (readline 'createInterface ReadlineOpts))
+	;; Add readline-matchtoken extension if present
+	(if rmt
+		(rmt RL))
 	(setup-handlers)
 	(setup-history)
 

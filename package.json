@@ -8,6 +8,9 @@
   },
   "author": "",
   "license": "ISC",
-  "dependencies": {},
+  "optionalDependencies": {
+    "js-object-pretty-print": "^0.3.0",
+    "readline-matchtoken": "^0.1.0"
+  },
   "repository": "https://github.com/andrakis/node-lispy"
 }

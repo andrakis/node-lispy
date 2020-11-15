@@ -20,11 +20,12 @@
  *
  * Custom types:
  *
- *  Symbol        A Lisp symbol
- *  Environment   Lisp environment with parent support
- *  Lambda        A Lisp lambda, with arguments, body, and pointer to environment
- *  Macro         As above
- *  Tuple         Like an Array/List but cannot be easily manipulated after creation
+ *  Symbol            A Lisp symbol
+ *  Environment       Lisp environment with parent support
+ *  Lambda            A Lisp lambda, with arguments, body, and pointer to environment
+ *  Macro             A special type of Lambda that does not immediately evaluate the
+ *                    arguments.
+ *  SpecialFunction   A builtin procedure that can reference the current environment.
  */
 
 "use strict";
@@ -51,6 +52,7 @@ class Symbol {
 function Parse (code) {
 	return read_from(tokenise(code));
 }
+var tSeparators = "()[]{}";
 function tokenise(str) {
 	var tokens = [];
 	var s = 0, t; // string counters, use s for most and t when required
@@ -60,8 +62,8 @@ function tokenise(str) {
 		if (str.substr(s, 2) === ';;')             // Skip comment lines
 			while(s < str.length && str[s] !== '\n' && str[s] !== '\r')
 				++s;
-		else if (str[s] === '(' || str[s] === ')') // List open or close
-			tokens.push(str[s++] === '(' ? '(' : ')');
+		else if(tSeparators.indexOf(str[s]) != -1) // List open or close
+			tokens.push(str[s++]);
 		else if (str[s] === '"') {                 // "string" in quotes
 			t = s;
 			var escape = 0;
@@ -75,7 +77,8 @@ function tokenise(str) {
 			s = t;
 		} else {                                   // A generic token
 			t = s;
-			while (t < str.length && !isspace(str[t]) && str[t] !== '(' && str[t] !== ')')
+			while (t < str.length && !isspace(str[t]) &&
+			       tSeparators.indexOf(str[t]) == -1)
 				++t;
 			tokens.push(str.substr(s, t - s));
 			s = t;
@@ -106,6 +109,7 @@ function read_from(tokens) {
 
 	var token = tokens.shift();
 	if (token === "(") {
+		// (: normal List open
 		var cells = [];
 		while (tokens[0] !== ")") {
 			cells.push(read_from(tokens));
@@ -114,6 +118,26 @@ function read_from(tokens) {
 		if (tokens.length === 0) throw new ParserError("Missing closing )");
 		tokens.shift(); // discard closing )
 		return cells;
+	} else if (token === "[") {
+		// [: auto list open (converts to (list ...))
+		var cells = [new Symbol('list')];
+		while (tokens[0] !== "]") {
+			cells.push(read_from(tokens));
+			if (tokens.length === 0) throw new ParserError("Missing closing ]");
+		}
+		if (tokens.length === 0) throw new ParserError("Missing closing ]");
+		tokens.shift(); // discard closing )
+		return cells;
+	} else if (token === "{") {
+		// {: tuple open (converts to tuple)
+		var cells = [];
+		while (tokens[0] !== "}") {
+			cells.push(read_from(tokens));
+			if (tokens.length === 0) throw new ParserError("Missing closing }");
+		}
+		if (tokens.length === 0) throw new ParserError("Missing closing }");
+		tokens.shift(); // discard closing )
+		return new Tuple(cells);
 	} else if (token === "'") {
 		// '(1 2 3) => (quote (1 2 3))
 		var cell = [];
@@ -204,6 +228,12 @@ class Environment {
 		for(var i = 0; i < names.length; ++i)
 			this.define(names[i], values[i]);
 	}
+	keys() {
+		var keys = [];
+		if (this.parent) keys = this.parent.keys();
+		keys = keys.concat(Object.keys(this.members));
+		return keys;
+	}
 }
 class Lambda {
 	constructor(args, body, env) {
@@ -241,6 +271,11 @@ class Tuple {
 	constructor(members) {
 		this.members = members;
 	}
+	toString() {
+		return "{" + this.members.toString() + "}";
+	}
+	map() { return this.members.map(...arguments); }
+	forEach() { return this.members.forEach(...arguments); }
 }
 function MakeTuple (members) {
 	var tuple = [];
@@ -296,7 +331,7 @@ function NormalEval (X, Env) {
 				while(Exps.length > 1)
 					Eval(Exps.shift(), Env);
 				X = Exps.shift();
-				continue;
+				continue; // tail recurse
 			case 'try': // (try Operation ErrorHandler)
 				// ErrorHandler is not evaulated until an error is caught
 				try {
@@ -320,14 +355,14 @@ function NormalEval (X, Env) {
 		}
 		var proc = Eval(X[0], Env);
 		var exps = X.slice(1);
-		if(proc.constructor !== Macro)
-			exps = exps.map(Y => Eval(Y, Env));
 		if(proc.constructor === Macro) {
 			var newEnv = new Environment(proc.env);
 			newEnv.update(proc.args, exps);
 			X = Eval(proc.body, newEnv);
 			continue; // tail recurse
-		} else if(proc.constructor === SpecialFunction) {
+		}
+		exps = exps.map(Y => Eval(Y, Env));
+		if(proc.constructor === SpecialFunction) {
 			return proc.handler(exps, Env);
 		} else if(typeof proc === 'function') {
 			if (proc.__proto__ === Lambda) {
@@ -372,14 +407,14 @@ var Eval = NormalEval;
 var depth = 0;
 function SetDebug (debug) {
 	Eval = debug ? DebugEval : NormalEval;
+	return debug;
 }
 
 // to_s: convert to string simply
 function to_s (val) {
-	if(val === undefined) return 'undefined';
 	if(val === null) return 'nil';
-	if(val.constructor === Symbol) return val.symbol;
-	return val.toString();
+	else if(val && val.constructor === Symbol) return val.symbol;
+	return String(val);
 }
 // to_string: convert to string extensively
 function to_string (val) {
@@ -466,11 +501,15 @@ var StdLib = {
 	'cdr': x => x.slice(1),
 	'tail': x => x.slice(1),
 	'slice': ManyArgs(Args => Args[0].slice(...Args.slice(1))),
-	'cons': (a, b) => a.concat(b),
+	'cons': (a, b) => [a].concat(b),
+	'concat': (a, b) => a.concat(b),
 	'equal?': (a, b) => a === b,
 	'length': x => x.length,
 	'list': ManyArgs(Args => Args),
+	'regexp': ManyArgs(Args => new RegExp(...Args)),
+	'date': ManyArgs(Args => new Date(...Args)),
 	'list?': x => x.constructor === Array,
+	'last': list => list[list.length ? list.length - 1 : 0],
 	'map': (list, callback) => list.map(callback),
 	'each': (list, callback) => list.forEach(callback),
 	'reduce': (list, callback) => list.reduce(callback),
@@ -493,7 +532,7 @@ var StdLib = {
 	'env:set': (env, key, value) => env.set(key, value),
 	'env:dump': env => env.dump(),
 	'env:parent': env => env.parent,
-	'env:keys': env => Object.keys(env.members),
+	'env:keys': env => env.keys(),
 	'dict:new': () => new Object(),
 	'dict:get': (dict, key) => dict[to_s(key)],
 	'dict:set': (dict, key, value) => dict[to_s(key)] = value,
@@ -509,6 +548,8 @@ var StdLib = {
 	'stdin': () => process.stdin,
 	'stdout': () => process.stdout,
 	'inspect': obj => util.inspect(obj),
+	'kernel:debug?': () => Eval === DebugEval,
+	'kernel:debug': bool => SetDebug(bool),
 };
 function AddStdLib (env) {
 	for(var key in StdLib)
@@ -616,9 +657,16 @@ var exps = {
 	Tuple: Tuple,
 	MakeTuple: MakeTuple,
 	Eval: Eval,
+	SetDebug: SetDebug,
 	AddStdLib: AddStdLib,
 	Parse: Parse,
 	Main: Main,
+	KeyNotFoundError: KeyNotFoundError,
+	ParserError: ParserError,
+	UnexpectedInputError: UnexpectedInputError,
+	InvalidArgumentError: InvalidArgumentError,
+	InvalidOperationError: InvalidOperationError,
+	UnreachableError: UnreachableError,
 };
 
 for(var key in exps)

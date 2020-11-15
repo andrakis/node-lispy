@@ -8,7 +8,8 @@ About
 
 A special feature is that lambdas are native JavaScript functions,
 with some extra properties, meaning they can be called from any
-JavaScript function with no special handling:
+JavaScript function with no special handling. This allows easy
+interoperation with all Node.js / JavaScript packages.
 
 Next, it uses the function(...args) operator to call functions
 with arbritrary parameters, rather than Object.apply which requires
@@ -35,9 +36,10 @@ If it crashes, check the mistake is not in your code.
 
 Custom types:
 
- Symbol        A Lisp symbol
- Environment   Lisp environment with parent support
- Lambda        A Lisp lambda, with arguments, body, and pointer to environment
- Macro         As above
- Tuple         Like an Array/List but cannot be easily manipulated after creation
+    Symbol            A Lisp symbol
+    Environment       Lisp environment with parent support
+    Lambda            A Lisp lambda, with arguments, body, and pointer to environment
+    Macro             A special type of Lambda that does not immediately evaluate the
+                      arguments.
+    SpecialFunction   A builtin procedure that can reference the current environment.
 
