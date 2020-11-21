@@ -25,4 +25,6 @@
 	(define FS (require "fs"))
 	(print "Size of lispy.js:"
 		(length (to_s (FS 'readFileSync "lispy.js"))))
+
+	'ok
 )

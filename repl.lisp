@@ -18,9 +18,11 @@
 	;; ===============================================
 	;; Optional Node.js modules
 	;; ===============================================
+	;; Make try blocks look a bit nicer
+	(define catch (macro Args (cons 'lambda Args)))
 	(define try-require (lambda (Path)
 		(try (require Path)
-		     (lambda (E) nil))))
+		     (catch (E) nil))))
 	(define rmt (try-require "readline-matchtoken"))
 
 	;; ===============================================
@@ -56,9 +58,9 @@
 	(define command? (lambda (Word) (dict:key? Commands Word)))
 	(define command! (lambda (Word Args) ((command-body (dict:get Commands Word)) Args)))
 	(define command-new  (lambda (Description Help Body) (list 'command Description Help Body)))
-	(define command-desc (lambda (C) (head (tail C)))) ;; ['command (Desc) Help Body]
-	(define command-help (lambda (C) (head (tail (tail C))))) ;; ['command Desc (Help) Body]
-	(define command-body (lambda (C) (head (tail (tail (tail C)))))) ;; ['command Desc Help (Body)]
+	(define command-desc (lambda (C) (index C 1)))     ;; ['command (Desc) Help Body]
+	(define command-help (lambda (C) (index C 2)))     ;; ['command Desc (Help) Body]
+	(define command-body (lambda (C) (index C 3)))     ;; ['command Desc Help (Body)]
 	(define add-command  (lambda (Command Description Help Body)
 		(dict:set Commands Command (command-new Description Help Body))))
 
@@ -194,7 +196,7 @@
 		(define Parsed "")
 		(try
 			(set! Parsed (parse Line))
-			(lambda (E) (begin
+			(catch (E) (begin
 				(set! ParseError true)
 				(if ShowParserErrorFlag
 					(print "Error in parsing:" (dict:get E "stack"))
@@ -218,7 +220,7 @@
 	(define then-run (lambda (Code)
 		(try
 			(print (do-eval Code))
-			(lambda (E) (begin
+			(catch (E) (begin
 				(define EName (dict:get E 'name))
 				(if ShowStackFlag
 					(print (dict:get E 'stack))
@@ -237,7 +239,10 @@
 		(define Words
 			((split Input " ")
 			 'filter (lambda (W) (length W))))
-		(define First (head Words))
+		(define First
+			(if (null? Words)
+				""
+				(head Words)))
 		(if (command? First)
 			(command! First (tail Words))
 			(parse-then-run Input)
@@ -299,10 +304,12 @@
 		(define Hits (Keys 'filter (lambda (C) (C 'startsWith Word))))
 		;; Prepend the line prefix to all results. Funky things happen
 		;; if we do not do this.
-		(set! Keys (map Keys (lambda (K) (+ LinePre K))))
-		(set! Hits (map Hits (lambda (H) (+ LinePre H))))
 		;; return: [ [Candidate...] OriginalLine ]
-		(list (if (null? Hits) Keys Hits) Line)
+		(list
+			(map
+				(if (null? Hits) Keys Hits)
+				(lambda (H) (+ LinePre H)))
+			Line)
 	)))
 
 	;; ===============================================
@@ -311,7 +318,7 @@
 	(define read-history (lambda ()
 		(try
 			(split (fs 'readFileSync HistoryFile "utf8") "\n")
-			(catch (lambda (E) (list))) ;; Return no history on error
+			(catch (E) (list)) ;; Return no history on error
 		)
 	))
 	(define write-history (lambda ()
@@ -321,8 +328,7 @@
 					;; Only take most recent lines up to MaximumHistoryLines
 					(slice (dict:get RL "history") 0 MaximumHistoryLines)
 					"\n"))
-			;; catch
-			(lambda (E) 'fail)
+			(catch (E) 'fail)
 		)
 	))
 	(define setup-history (lambda ()
