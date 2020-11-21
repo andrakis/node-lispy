@@ -47,9 +47,9 @@
 	(define DebugEvalFlag false)
 	(define OriginalDebugEvalFlag (kernel:debug?))
 	(define TimingFlag false)
-	;; REPL environment - created with our parent as parent.
+	;; REPL environment - created with toplevel parent as parent.
 	;; This decouples the REPL state from the environment code will run in.
-	(define ReplEnv (env:new (env:parent (env:current))))
+	(define ReplEnv (env:new (env:toplevel (env:current))))
 
 	;; ===============================================
 	;; REPL commands interface

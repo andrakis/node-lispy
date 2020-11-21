@@ -20,12 +20,14 @@
  *
  * Custom types:
  *
- *  Symbol            A Lisp symbol
- *  Environment       Lisp environment with parent support
- *  Lambda            A Lisp lambda, with arguments, body, and pointer to environment
+ *  Symbol            A Lisp symbol.
+ *  Environment       Lisp environment with parent support.
+ *  Lambda            A Lisp lambda, with arguments, body, and pointer to environment.
  *  Macro             A special type of Lambda that does not immediately evaluate the
  *                    arguments.
  *  SpecialFunction   A builtin procedure that can reference the current environment.
+ *  Tuple             A special type of list.
+ *
  */
 
 "use strict";
@@ -130,14 +132,14 @@ function read_from(tokens) {
 		return cells;
 	} else if (token === "{") {
 		// {: tuple open (converts to tuple)
-		var cells = [];
+		var cells = [new Symbol('tuple')];
 		while (tokens[0] !== "}") {
 			cells.push(read_from(tokens));
 			if (tokens.length === 0) throw new ParserError("Missing closing }");
 		}
 		if (tokens.length === 0) throw new ParserError("Missing closing }");
 		tokens.shift(); // discard closing )
-		return new Tuple(cells);
+		return cells;
 	} else if (token === "'") {
 		// '(1 2 3) => (quote (1 2 3))
 		var cell = [];
@@ -234,12 +236,18 @@ class Environment {
 		keys = keys.concat(Object.keys(this.members));
 		return keys;
 	}
+	toplevel() {
+		var toplevel = this;
+		while(toplevel.parent) toplevel = toplevel.parent;
+		return toplevel;
+	}
 }
 class Lambda {
-	constructor(args, body, env) {
+	constructor(args, body, env, evaluator) {
 		this.args = args;
 		this.body = body;
 		this.env  = env;
+		this.evaluator = evaluator || Eval;
 	}
 	toString() { return '#Lambda'; };
 }
@@ -247,7 +255,7 @@ function MakeCallableLambda (lambda) {
 	var fn = function() {
 		var targetEnv = new Environment(lambda.env);
 		targetEnv.update(lambda.args, slice.call(arguments));
-		return Eval(lambda.body, targetEnv);
+		return lambda.evaluator(lambda.body, targetEnv);
 	};
 	fn.lambda = lambda;
 	fn.__proto__ = Lambda;
@@ -270,23 +278,18 @@ class Macro {
 class Tuple {
 	constructor(members) {
 		this.members = members;
+		// Make this look like an Array
+		for(var key in members)
+			this[key] = members[key];
 	}
 	toString() {
-		return "{" + this.members.toString() + "}";
+		return "{" + this.members.map(to_string_mapper).join(" ") + "}";
 	}
 	map() { return this.members.map(...arguments); }
 	forEach() { return this.members.forEach(...arguments); }
 }
-function MakeTuple (members) {
-	var tuple = [];
-	tuple.__proto__ = Tuple;
-	tuple.tuple = new Tuple(members);
-	tuple.members = members;
-	for(var i = 0; i < members.length; ++i)
-		tuple.push(members[i]);
-	return tuple;
-}
 function inspect (obj, maxlength) {
+	return to_string(obj, true);//.substr(0, maxlength);
 	if (obj === undefined) return "'undefined";
 	if (obj === null) return "'nil";
 	if (obj.constructor === Symbol)
@@ -323,7 +326,7 @@ function NormalEval (X, Env) {
 			case 'set!': // (set! Name Value) must exist
 				return Env.set(X[1], Eval(X[2], Env));
 			case 'lambda': // (lambda Args Body)
-				return MakeCallableLambda(new Lambda(X[1], X[2], Env));
+				return MakeCallableLambda(new Lambda(X[1], X[2], Env, Eval));
 			case 'macro': // (macro Args Body)
 				return new Macro(X[1], X[2], Env);
 			case 'begin': // (begin Exps)
@@ -417,12 +420,17 @@ function to_s (val) {
 	return String(val);
 }
 // to_string: convert to string extensively
-function to_string (val) {
+function to_string (val, withquotes) {
 	if(val === undefined) return 'undefined';
 	if(val === null) return 'nil';
 	if(val.constructor === Symbol) return val.toString();
+	if(withquotes && typeof val === 'string') return '"' + val + '"';
 	if(typeof val === 'function' && val.__proto__ === Lambda)
 		return val.lambda.toString();
+	if(val.constructor === Array)
+		return "[" + val.map(v=>to_string(v, withquotes)).join(" ") + "]";
+	if(val.__proto__ === Tuple)
+		return "{" + val.map(v=>to_string(v, withquotes)).join(" ") + "}";
 	return val.toString();
 }
 var slice  = Array.prototype.slice,
@@ -450,7 +458,8 @@ var Types = {
 	'environment': new Symbol('environment'),
 	'lambda': new Symbol('lambda'),
 	'macro': new Symbol('macro'),
-	'proc': new Symbol('proc')
+	'proc': new Symbol('proc'),
+	'sproc': new Symbol('sproc'),
 };
 function LispyTypeOf (x) {
 	if (x === undefined) return Types['undefined'];
@@ -464,12 +473,13 @@ function LispyTypeOf (x) {
 			return Types['lambda'];
 		return Types['proc'];
 	}
-	if (x.constructor === SpecialFunction) return Types['proc'];
+	if (x.constructor === SpecialFunction) return Types['sproc'];
 	if (x.constructor === Macro) return Types['macro'];
 	if (x.constructor === Environment) return Types['environment'];
 	if (typeof x === 'object') return Types['object'];
 	throw new UnexpectedInputError("Unknown object type: " + typeof x);
 }
+var to_string_mapper = (v) => to_string(v);
 var StdLib = {
 	'undefined': undefined,
 	'nil': null,
@@ -486,15 +496,17 @@ var StdLib = {
 	'<=':(a, b) => a <= b,
 	'>': (a, b) => a > b,
 	'>=':(a, b) => a >= b,
-	'=': (a, b) => a == b,
+	// TODO: hacky, but symbols need to be comparable to each other
+	'=': (a, b) => (a && a.constructor === Symbol && b) ? (a.symbol == b.symbol) : (a == b),
 	'!=':(a, b) => a != b,
 	'===': (a, b) => a === b,
 	'!==': (a, b) => a !== b,
 	'to_s': x => to_s(x),
+	'to_string': (val, withquotes) => to_string(val, withquotes),
 	'split': (s, r) => s.split(r),
 	'join': (s, j) => s.join(j),
 	'regexp': (pattern, flags) => new RegExp(pattern, flags),
-	'print': ManyArgs(Args => console.log(Args.map(to_string).join(' '))),
+	'print': ManyArgs(Args => console.log(Args.map(to_string_mapper).join(' '))),
 	'log': ManyArgs(Args => console.log(...Args)),
 	'car': x => x[0],
 	'head': x => x[0],
@@ -505,10 +517,12 @@ var StdLib = {
 	'concat': (a, b) => a.concat(b),
 	'equal?': (a, b) => a === b,
 	'length': x => x.length,
+	'tuple': ManyArgs(Args => new Tuple(Args)),
 	'list': ManyArgs(Args => Args),
 	'regexp': ManyArgs(Args => new RegExp(...Args)),
 	'date': ManyArgs(Args => new Date(...Args)),
 	'list?': x => x.constructor === Array,
+	'index': (list, index) => list[index],
 	'last': list => list[list.length ? list.length - 1 : 0],
 	'map': (list, callback) => list.map(callback),
 	'each': (list, callback) => list.forEach(callback),
@@ -526,12 +540,15 @@ var StdLib = {
 	'typeof': x => LispyTypeOf(x),
 	'env:current': new SpecialFunction((Args, Env) => Env),
 	'env:new': pEnv => new Environment(pEnv),
-	'env:get': (env, key) => env[key],
+	'env:get': (env, key) => env.get(key),
 	'env:define': (env, key, value) => env.define(key, value),
 	'env:defined?': (env, key) => env.present(key),
-	'env:set': (env, key, value) => env.set(key, value),
+	'env:set!': (env, key, value) => env.set(key, value),
+	'env:update': (env, keys, values) => env.update(keys, values),
 	'env:dump': env => env.dump(),
 	'env:parent': env => env.parent,
+	'env:parent?': env => !!env.parent,
+	'env:toplevel': env => env.toplevel(),
 	'env:keys': env => env.keys(),
 	'dict:new': () => new Object(),
 	'dict:get': (dict, key) => dict[to_s(key)],
@@ -550,6 +567,20 @@ var StdLib = {
 	'inspect': obj => util.inspect(obj),
 	'kernel:debug?': () => Eval === DebugEval,
 	'kernel:debug': bool => SetDebug(bool),
+	'proc:apply': (Proc, Args) => Proc(...Args),
+	'proc:objectapply': (Obj, Member, Args) => Obj[to_s(Member)](...Args),
+	'lambda:new' : (Args, Body, Env, Evaluator) =>
+		MakeCallableLambda(new Lambda(Args, Body, Env, Evaluator)),
+	'lambda:args': lambda => lambda.lambda.args,
+	'lambda:body': lambda => lambda.lambda.body,
+	'lambda:env' : lambda => lambda.lambda.env,
+	'lambda:evaluator': lambda => lambda.lambda.evaluator,
+	'macro:new' : (Args, Body, Env) => new Macro(Args, Body, Env),
+	'macro:args': macro => macro.args,
+	'macro:body': macro => macro.body,
+	'macro:env' : macro => macro.env,
+	'error'     : e => { throw e; },
+	'error:custom': (Name, Message) => new CustomError(Name, Message),
 };
 function AddStdLib (env) {
 	for(var key in StdLib)
@@ -592,6 +623,12 @@ class UnreachableError extends Error {
 	constructor() {
 		super("This code should not be reachable");
 		this.name = "UnreachableError";
+	}
+}
+class CustomError extends Error {
+	constructor(name, message) {
+		super(message);
+		this.name = name;
 	}
 }
 
@@ -655,10 +692,14 @@ var exps = {
 	Lambda: Lambda,
 	Macro: Macro,
 	Tuple: Tuple,
-	MakeTuple: MakeTuple,
 	Eval: Eval,
 	SetDebug: SetDebug,
 	AddStdLib: AddStdLib,
+	StandardEnvironment: (() => {
+		var env = new Environment();
+		AddStdLib(env);
+		return env;
+	})(),
 	Parse: Parse,
 	Main: Main,
 	KeyNotFoundError: KeyNotFoundError,
