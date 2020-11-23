@@ -340,6 +340,12 @@
 	;; ===============================================
 	;; REPL startup
 	;; ===============================================
+
+	;; If dyneval present, add it to the target environment
+	(if (defined? dyneval)
+		(each (dict:keys dyneval) (lambda (Key)
+			(env:define ReplEnv Key (dict:get dyneval Key)))))
+
 	(define ReadlineOpts (dict:new))
 	(dict:update ReadlineOpts 'input (stdin))
 	(dict:update ReadlineOpts 'output (stdout))

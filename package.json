@@ -1,6 +1,6 @@
 {
   "name": "lispy",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Bare-bones Lisp interpreter",
   "main": "index.js",
   "scripts": {

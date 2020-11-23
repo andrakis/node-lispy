@@ -161,6 +161,7 @@ class Environment {
 	constructor(parent) {
 		this.members = {};
 		this.parent  = parent;
+		Environment.Count++;
 	}
 	toString() {
 		return '#Environment';
@@ -183,7 +184,7 @@ class Environment {
 			return this.parent.get(key, (from || this));
 		throw new KeyNotFoundError(key, from);
 	};
-	dump() {
+	dump(key) {
 		var depth = 0;
 		var target = this;
 		var lines = [];
@@ -207,6 +208,7 @@ class Environment {
 			target = target.parent;
 		} while(target && target.parent);
 		console.error(lines.reverse().join("\n"));
+		if(key) console.error("Key not found:", key);
 	}
 	define(key, value) {
 		if(key.constructor === Symbol)
@@ -242,6 +244,7 @@ class Environment {
 		return toplevel;
 	}
 }
+Environment.Count = 0;
 class Lambda {
 	constructor(args, body, env, evaluator) {
 		this.args = args;
@@ -497,7 +500,9 @@ var StdLib = {
 	'>': (a, b) => a > b,
 	'>=':(a, b) => a >= b,
 	// TODO: hacky, but symbols need to be comparable to each other
-	'=': (a, b) => (a && a.constructor === Symbol && b) ? (a.symbol == b.symbol) : (a == b),
+	'=': (a, b) =>
+		((a && a.constructor === Symbol) ? a.symbol : a) ==
+		((b && b.constructor === Symbol) ? b.symbol : b),
 	'!=':(a, b) => a != b,
 	'===': (a, b) => a === b,
 	'!==': (a, b) => a !== b,
@@ -592,7 +597,7 @@ class KeyNotFoundError extends Error {
 	constructor(key, env) {
 		super("Key " + to_s(key) + " not found");
 		this.name = "KeyNotFoundError";
-		env.dump();
+		env.dump(key);
 	}
 }
 class ParserError extends Error {
@@ -670,20 +675,49 @@ function Main () {
 		console.error("       arguments... Arguments to pass");
 	} else {
 		SetDebug(debugMode);
-		var fileContent = fs.readFileSync(programFile);
-		var globalEnv = new Environment();
-		AddStdLib(globalEnv);
-		var env = new Environment(globalEnv);
+		var fileContent = fs.readFileSync(programFile, 'utf8');
+		var env = new Environment(StandardEnvironment);
+		// Open core.lisp and execute that in the target environment
+		var start = new Date();
 		// Add any arguments as an environment variable
 		env.define('argv', programArguments);
-		var start = new Date();
-		var code = Parse(fileContent.toString());
+		// Set __main__ to identify as the startup file
+		env.define('__main__', true);
+		// Set a dummy exports target
+		env.define('exports', {});
+		start = new Date();
+		var code = Parse(fileContent);
 		var now = new Date();
 		if (timeMode) console.error("Parsed in " + (now - start) + "ms");
 		start = now;
 		Eval(code, env);
-		if (timeMode) console.error("Executed in " + (new Date() - start) + "ms");
+		if (timeMode)
+			process.on('exit', () => {
+				console.error("Executed in " + (new Date() - start) + "ms");
+				console.error("In total, " + Environment.Count + " Environments were constructed");
+			});
 	}
+}
+
+var StandardEnvironment = new Environment();
+AddStdLib(StandardEnvironment);
+var CoreEnvironment = new Environment(StandardEnvironment);
+// Load core.lisp
+(function () {
+	var coreContent = fs.readFileSync("core.lisp", 'utf8');
+	var coreParsed  = Parse(coreContent);
+	var coreEvaluate= Eval(coreParsed, CoreEnvironment);
+})();
+
+// Require a Lispy module like you would a NodeJS module
+function Require (path) {
+	var module = CoreEnvironment.get('import-require')(path);
+	// Strip the module name from all keys
+	Object.keys(module).forEach(key => {
+		module[key.replace(/^.*?:/, '')] = module[key];
+		delete module[key];
+	});
+	return module;
 }
 
 var exps = {
@@ -693,13 +727,11 @@ var exps = {
 	Macro: Macro,
 	Tuple: Tuple,
 	Eval: Eval,
+	Require: Require,
 	SetDebug: SetDebug,
 	AddStdLib: AddStdLib,
-	StandardEnvironment: (() => {
-		var env = new Environment();
-		AddStdLib(env);
-		return env;
-	})(),
+	StandardEnvironment: StandardEnvironment,
+	CoreEnvironment: CoreEnvironment,
 	Parse: Parse,
 	Main: Main,
 	KeyNotFoundError: KeyNotFoundError,
