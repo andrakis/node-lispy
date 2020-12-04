@@ -188,7 +188,7 @@
 	(define parse-then-run (lambda (Line) (begin
 		(if ContinuationFlag (begin
 			(set! ContinuationFlag false)
-			(set! Line (+ ContinuedLine Line))
+			(set! Line (+ ContinuedLine "\n" Line))
 			(RL 'setPrompt PromptDefault)
 		))
 			
