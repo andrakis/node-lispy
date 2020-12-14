@@ -1,8 +1,11 @@
 {
   "name": "lispy",
-  "version": "1.3.0",
+  "version": "1.3.2",
   "description": "Bare-bones Lisp interpreter",
   "main": "index.js",
+  "bin": {
+    "lispy": "./index.js"
+  },
   "scripts": {
     "test": "./index.js test.lisp"
   },

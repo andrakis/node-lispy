@@ -221,10 +221,9 @@
 		(try
 			(print (do-eval Code))
 			(catch (E) (begin
-				(define EName (dict:get E 'name))
 				(if ShowStackFlag
-					(print (dict:get E 'stack))
-					(print (dict:get E 'message))
+					(print (error:stack E))
+					(print "Uncaught" (+ (error:name E) ":") (error:message E))
 				)
 			))
 		)
@@ -307,7 +306,7 @@
 		;; return: [ [Candidate...] OriginalLine ]
 		(list
 			(map
-				(if (null? Hits) Keys Hits)
+				((if (null? Hits) Keys Hits) 'sort)
 				(lambda (H) (+ LinePre H)))
 			Line)
 	)))

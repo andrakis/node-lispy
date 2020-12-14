@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 var Lispy = require('./lispy');
 
 for(var key in Lispy)

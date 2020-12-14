@@ -33,9 +33,15 @@
 "use strict";
 
 var fs = require('fs');
+var path = require('path');
 var util = require('util');
 
+if (typeof __dirname === 'undefined')
+	var __dirname = "";
+var RuntimeDirectory = __dirname;
+
 var debugMode = false;
+var depth = 1;
 
 var startOf = str => str.length ? str[0] : '';
 var endOf   = str => str.length ? str[str.length - 1] : '';
@@ -184,7 +190,7 @@ class Environment {
 			return this.parent.get(key, (from || this));
 		throw new KeyNotFoundError(key, from);
 	};
-	dump(key) {
+	dump(fromKey) {
 		var depth = 0;
 		var target = this;
 		var lines = [];
@@ -208,7 +214,7 @@ class Environment {
 			target = target.parent;
 		} while(target && target.parent);
 		console.error(lines.reverse().join("\n"));
-		if(key) console.error("Key not found:", key);
+		if(fromKey) console.error("Key not found:", fromKey);
 	}
 	define(key, value) {
 		if(key.constructor === Symbol)
@@ -255,14 +261,14 @@ class Lambda {
 	toString() { return '#Lambda'; };
 }
 function MakeCallableLambda (lambda) {
-	var fn = function() {
+	var LambdaCalledFromJavaScript = function() {
 		var targetEnv = new Environment(lambda.env);
 		targetEnv.update(lambda.args, slice.call(arguments));
 		return lambda.evaluator(lambda.body, targetEnv);
 	};
-	fn.lambda = lambda;
-	fn.__proto__ = Lambda;
-	return fn;
+	LambdaCalledFromJavaScript.lambda = lambda;
+	LambdaCalledFromJavaScript.__proto__ = Lambda;
+	return LambdaCalledFromJavaScript;
 }
 // A SpecialFunction is a function(Arguments, CurrentEnvironment)
 class SpecialFunction {
@@ -410,7 +416,6 @@ function DebugEval (X, Env) {
 	return result;
 }
 var Eval = NormalEval;
-var depth = 0;
 function SetDebug (debug) {
 	Eval = debug ? DebugEval : NormalEval;
 	return debug;
@@ -463,10 +468,12 @@ var Types = {
 	'macro': new Symbol('macro'),
 	'proc': new Symbol('proc'),
 	'sproc': new Symbol('sproc'),
+	'error': new Symbol('error'),
 };
 function LispyTypeOf (x) {
 	if (x === undefined) return Types['undefined'];
 	if (x === null) return Types['nil'];
+	if (x instanceof Error) return Types['error'];
 	if (x.constructor === Array) return Types['list'];
 	if (typeof x === 'number') return Types['number'];
 	if (typeof x === 'string') return Types['string'];
@@ -483,6 +490,7 @@ function LispyTypeOf (x) {
 	throw new UnexpectedInputError("Unknown object type: " + typeof x);
 }
 var to_string_mapper = (v) => to_string(v);
+var LispyParse = Parse;
 var StdLib = {
 	'undefined': undefined,
 	'nil': null,
@@ -529,9 +537,9 @@ var StdLib = {
 	'list?': x => x.constructor === Array,
 	'index': (list, index) => list[index],
 	'last': list => list[list.length ? list.length - 1 : 0],
-	'map': (list, callback) => list.map(callback),
-	'each': (list, callback) => list.forEach(callback),
-	'reduce': (list, callback) => list.reduce(callback),
+	'map': (list, callback) => list.map(v => callback(v)),
+	'each': (list, callback) => list.forEach(v => callback(v)),
+	'list:reduce': (list, initial, callback) => list.reduce((a,v) => callback(v, a), initial),
 	'not': x => !x,
 	'and': (a, b) => a && b,
 	'or': (a, b) => a || b,
@@ -576,7 +584,10 @@ var StdLib = {
 	'proc:objectapply': (Obj, Member, Args) => Obj[to_s(Member)](...Args),
 	'lambda:new' : (Args, Body, Env, Evaluator) =>
 		MakeCallableLambda(new Lambda(Args, Body, Env, Evaluator)),
-	'lambda:args': lambda => lambda.lambda.args,
+	'lambda:args': lambda =>
+		lambda.__proto__ === Lambda ?
+			lambda.lambda.args          // Lispy Lambda, return args
+			: new Array(lambda.length), // Javascript function, return array with args length
 	'lambda:body': lambda => lambda.lambda.body,
 	'lambda:env' : lambda => lambda.lambda.env,
 	'lambda:evaluator': lambda => lambda.lambda.evaluator,
@@ -586,6 +597,11 @@ var StdLib = {
 	'macro:env' : macro => macro.env,
 	'error'     : e => { throw e; },
 	'error:custom': (Name, Message) => new CustomError(Name, Message),
+	'lispy:setparse': (parse) => LispyParse = parse,
+	'lispy:jseval': (Code) => eval(Code),
+	'lispy:interface': () => exports,
+	'lispy:runtime': () => RuntimeDirectory,
+	'lispy:runpath': (File) => path.join(RuntimeDirectory, File),
 };
 function AddStdLib (env) {
 	for(var key in StdLib)
@@ -674,10 +690,12 @@ function Main () {
 		console.error("       --           End Lispy argument passing");
 		console.error("       arguments... Arguments to pass");
 	} else {
+		// Report late debug messages
+		if (timeMode)
+			DebugLateTimings.forEach(T => console.error(T));
 		SetDebug(debugMode);
 		var fileContent = fs.readFileSync(programFile, 'utf8');
 		var env = new Environment(StandardEnvironment);
-		// Open core.lisp and execute that in the target environment
 		var start = new Date();
 		// Add any arguments as an environment variable
 		env.define('argv', programArguments);
@@ -686,38 +704,49 @@ function Main () {
 		// Set a dummy exports target
 		env.define('exports', {});
 		start = new Date();
-		var code = Parse(fileContent);
+		// Use exports.Parse, as core loads in a new parser
+		var code = LispyParse(fileContent);
 		var now = new Date();
 		if (timeMode) console.error("Parsed in " + (now - start) + "ms");
 		start = now;
 		Eval(code, env);
-		if (timeMode)
+		if (timeMode) {
+			now = new Date();
+			console.error("Executed in " + (now - start) + "ms");
+			start = now;
 			process.on('exit', () => {
-				console.error("Executed in " + (new Date() - start) + "ms");
+				console.error("Event loop complete in " + (new Date() - start) + "ms");
 				console.error("In total, " + Environment.Count + " Environments were constructed");
 			});
+		}
 	}
 }
 
+var DebugLateTimings = [];
 var StandardEnvironment = new Environment();
 AddStdLib(StandardEnvironment);
 var CoreEnvironment = new Environment(StandardEnvironment);
 // Load core.lisp
 (function () {
-	var coreContent = fs.readFileSync("core.lisp", 'utf8');
+	var start = new Date();
+	var coreContent = fs.readFileSync(path.join(RuntimeDirectory, "core.lisp"), 'utf8');
 	var coreParsed  = Parse(coreContent);
+	var now = new Date();
+	DebugLateTimings.push("Core parsed in " + (now - start) + "ms");
+	start = now;
 	var coreEvaluate= Eval(coreParsed, CoreEnvironment);
+	DebugLateTimings.push("Core evaluated in " + (now - start) + "ms");
 })();
 
 // Require a Lispy module like you would a NodeJS module
 function Require (path) {
-	var module = CoreEnvironment.get('import-require')(path);
+	var module = CoreEnvironment.get('get-module')(path);
+	var result = {};
 	// Strip the module name from all keys
 	Object.keys(module).forEach(key => {
-		module[key.replace(/^.*?:/, '')] = module[key];
-		delete module[key];
+		result[key.replace(/^.*?:/, '')] = module[key];
 	});
-	return module;
+	return result;
 }
 
 var exps = {
@@ -729,10 +758,13 @@ var exps = {
 	Eval: Eval,
 	Require: Require,
 	SetDebug: SetDebug,
+	StdLib: StdLib,
 	AddStdLib: AddStdLib,
 	StandardEnvironment: StandardEnvironment,
 	CoreEnvironment: CoreEnvironment,
 	Parse: Parse,
+	ToS: to_s,
+	ToString: to_string,
 	Main: Main,
 	KeyNotFoundError: KeyNotFoundError,
 	ParserError: ParserError,
@@ -740,6 +772,7 @@ var exps = {
 	InvalidArgumentError: InvalidArgumentError,
 	InvalidOperationError: InvalidOperationError,
 	UnreachableError: UnreachableError,
+	CustomError: CustomError,
 };
 
 for(var key in exps)

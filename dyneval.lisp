@@ -394,7 +394,7 @@
 
 	(define show-help (lambda () (begin
 		(print "Usage:")
-		(print "node index.lisp -- dyneval.lisp [-d] [-t] [-N] [--] [filename.lisp] [arguments...]")
+		(print "node index.js -- dyneval.lisp [-d] [-t] [-N] [--] [filename.lisp] [arguments...]")
 		(print "     -d                Enable debug mode")
 		(print "     -t                Enable timing mode")
 		(print "     -T                Enable test mode")
